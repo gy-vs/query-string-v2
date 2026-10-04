@@ -1308,3 +1308,216 @@ test('stringifies empty keys', function (t) {
         st.end();
     });
 });
+
+test('stringify allowReserved', function (t) {
+    t.test('leaves safe RFC 3986 reserved characters verbatim in values', function (st) {
+        st.equal(
+            qs.stringify({ redirect: 'https://example.com/a?b=1' }, { allowReserved: true }),
+            'redirect=https://example.com/a?b=1'
+        );
+        st.equal(
+            qs.stringify({ a: "x:/?@!$'()*,;=" }, { allowReserved: true }),
+            "a=x:/?@!$'()*,;="
+        );
+        st.end();
+    });
+
+    t.test('encodes reserved characters that would truncate or alter the query', function (st) {
+        // `&` splits pairs, `#` starts the fragment, `+` decodes to a space,
+        // and `[`/`]` are not permitted unencoded in a query
+        st.equal(
+            qs.stringify({ a: "x:/?#@!$&'()*+,;=[] " }, { allowReserved: true }),
+            "a=x:/?%23@!$%26'()*%2B,;=%5B%5D%20"
+        );
+        st.equal(
+            qs.stringify({ a: 'a b c&d=e' }, { allowReserved: true }),
+            'a=a%20b%20c%26d=e'
+        );
+        st.end();
+    });
+
+    t.test('round trips through qs.parse', function (st) {
+        var objects = [
+            { redirect: 'https://example.com/a?b=1' },
+            { a: "x:/?@!$'()*+,;=" },
+            { a: 'a b c&d=e' },
+            { a: '100% + literals' },
+            { a: 'a+b' },
+            { nested: { url: 'http://example.com/p?x=1&y=2' } }
+        ];
+
+        objects.forEach(function (obj) {
+            var str = qs.stringify(obj, { allowReserved: true });
+            st.deepEqual(qs.parse(str), obj, str);
+        });
+
+        st.end();
+    });
+
+    t.test('equals adjacent to an encoded bracket stays encoded', function (st) {
+        // parse locates the value after the first `]=`; `=` right after a raw
+        // `]` token must remain percent-encoded so the boundary is not moved
+        st.equal(qs.stringify({ a: 'x]=1' }, { allowReserved: true }), 'a=x%5D%3D1');
+        st.equal(qs.stringify({ a: 'x]y' }, { allowReserved: true }), 'a=x%5Dy');
+        st.equal(
+            qs.stringify({ 'a[b]': 'x]=y' }, { allowReserved: true }),
+            'a%5Bb%5D=x%5D%3Dy'
+        );
+        st.deepEqual(qs.parse(qs.stringify({ a: 'x]=1' }, { allowReserved: true })), { a: 'x]=1' });
+        st.deepEqual(
+            qs.parse(qs.stringify({ 'a[b]': 'x]=y' }, { allowReserved: true })),
+            { a: { b: 'x]=y' } }
+        );
+        st.end();
+    });
+
+    t.test('only affects values; keys keep the existing encoding', function (st) {
+        st.equal(
+            qs.stringify({ 'a/b?c': 'x:/?' }, { allowReserved: true }),
+            'a%2Fb%3Fc=x:/?'
+        );
+        st.deepEqual(
+            qs.parse(qs.stringify({ 'a/b?c': 'x:/?' }, { allowReserved: true })),
+            { 'a/b?c': 'x:/?' }
+        );
+        st.end();
+    });
+
+    t.test('combines with array formats', function (st) {
+        st.equal(
+            qs.stringify({ a: ['http://x/1', '/2'] }, { allowReserved: true, arrayFormat: 'indices' }),
+            'a%5B0%5D=http://x/1&a%5B1%5D=/2'
+        );
+        st.equal(
+            qs.stringify({ a: ['http://x/1', '/2'] }, { allowReserved: true, arrayFormat: 'brackets' }),
+            'a%5B%5D=http://x/1&a%5B%5D=/2'
+        );
+        st.equal(
+            qs.stringify({ a: ['http://x/1', '/2'] }, { allowReserved: true, arrayFormat: 'repeat' }),
+            'a=http://x/1&a=/2'
+        );
+
+        var arr = { a: ['http://x/1', 'b&c', 'd,e'] };
+        ['indices', 'brackets', 'repeat'].forEach(function (arrayFormat) {
+            var str = qs.stringify(arr, { allowReserved: true, arrayFormat: arrayFormat });
+            st.deepEqual(qs.parse(str, { arrayLimit: 100 }), arr, str);
+        });
+
+        st.end();
+    });
+
+    t.test('encodes the comma with arrayFormat comma', function (st) {
+        // commas are the join separator, so commas in elements stay encoded
+        st.equal(
+            qs.stringify({ a: ['a,b', 'c'] }, { allowReserved: true, arrayFormat: 'comma', encodeValuesOnly: true }),
+            'a=a%2Cb,c'
+        );
+        st.deepEqual(
+            qs.parse(
+                qs.stringify({ a: ['a,b', 'c'] }, { allowReserved: true, arrayFormat: 'comma', encodeValuesOnly: true }),
+                { comma: true }
+            ),
+            { a: ['a,b', 'c'] }
+        );
+        st.equal(
+            qs.stringify({ a: ['a,b', 'c'] }, { allowReserved: true, arrayFormat: 'comma' }),
+            'a=a%2Cb%2Cc'
+        );
+        // a scalar value is not comma-joined, so a literal comma survives
+        st.equal(qs.stringify({ a: 'a,b' }, { allowReserved: true }), 'a=a,b');
+        st.end();
+    });
+
+    t.test('encodes characters used by a custom delimiter', function (st) {
+        st.equal(
+            qs.stringify({ a: 'p;q', b: 'r:r' }, { allowReserved: true, delimiter: ';' }),
+            'a=p%3Bq;b=r:r'
+        );
+        st.deepEqual(
+            qs.parse(
+                qs.stringify({ a: 'p;q', b: 'r:r' }, { allowReserved: true, delimiter: ';' }),
+                { delimiter: ';' }
+            ),
+            { a: 'p;q', b: 'r:r' }
+        );
+        st.equal(
+            qs.stringify({ a: 'a//b' }, { allowReserved: true, delimiter: '//' }),
+            'a=a%2F%2Fb'
+        );
+        st.end();
+    });
+
+    t.test('combines with format RFC1738', function (st) {
+        st.equal(
+            qs.stringify({ a: 'x y:/?=+', b: 'a#b' }, { allowReserved: true, format: 'RFC1738' }),
+            'a=x+y:/?=%2B&b=a%23b'
+        );
+        st.deepEqual(
+            qs.parse(
+                qs.stringify({ a: 'x y:/?=+', b: 'a#b' }, { allowReserved: true, format: 'RFC1738' }),
+                { format: 'RFC1738' }
+            ),
+            { a: 'x y:/?=+', b: 'a#b' }
+        );
+        st.end();
+    });
+
+    t.test('combines with charset iso-8859-1', function (st) {
+        var isoObj = { a: 'café +/ :/?#' };
+        st.equal(
+            qs.stringify(isoObj, { allowReserved: true, charset: 'iso-8859-1' }),
+            'a=caf%E9%20%2B/%20:/?%23'
+        );
+        st.deepEqual(
+            qs.parse(
+                qs.stringify(isoObj, { allowReserved: true, charset: 'iso-8859-1' }),
+                { charset: 'iso-8859-1' }
+            ),
+            isoObj
+        );
+        st.end();
+    });
+
+    t.test('does not alter the output of a custom encoder', function (st) {
+        var customEncoder = function (str) {
+            return String(str);
+        };
+        st.equal(
+            qs.stringify({ a: '://& +' }, { allowReserved: true, encoder: customEncoder }),
+            'a=://& +'
+        );
+        st.equal(
+            qs.stringify({ redirect: 'https://example.com/a?b=1' }, { allowReserved: true, encoder: customEncoder }),
+            'redirect=https://example.com/a?b=1'
+        );
+        st.end();
+    });
+
+    t.test('has no effect with encode disabled', function (st) {
+        st.equal(
+            qs.stringify({ a: 'a/b?c&d' }, { allowReserved: true, encode: false }),
+            qs.stringify({ a: 'a/b?c&d' }, { encode: false })
+        );
+        st.end();
+    });
+
+    t.test('defaults to disabled and produces the existing output', function (st) {
+        st.equal(
+            qs.stringify({ redirect: 'https://example.com/a?b=1' }),
+            'redirect=https%3A%2F%2Fexample.com%2Fa%3Fb%3D1'
+        );
+        st.equal(
+            qs.stringify({ redirect: 'https://example.com/a?b=1' }, { allowReserved: false }),
+            qs.stringify({ redirect: 'https://example.com/a?b=1' })
+        );
+        st.end();
+    });
+
+    t.test('rejects a non-boolean value', function (st) {
+        st['throws'](function () {
+            qs.stringify({}, { allowReserved: 'true' });
+        }, new TypeError('`allowReserved` option can only be `true` or `false`, when provided'));
+        st.end();
+    });
+});
+
