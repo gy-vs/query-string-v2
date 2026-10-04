@@ -4,6 +4,7 @@ var test = require('tape');
 var qs = require('../');
 var utils = require('../lib/utils');
 var iconv = require('iconv-lite');
+var inspect = require('object-inspect');
 var SaferBuffer = require('safer-buffer').Buffer;
 var hasSymbols = require('has-symbols');
 var mockProperty = require('mock-property');
@@ -1188,6 +1189,149 @@ test('stringify()', function (t) {
         };
 
         st.deepEqual(qs.stringify({ KeY: 'vAlUe' }, { encoder: encoder }), 'key=VALUE');
+        st.end();
+    });
+
+    t.test('allowReserved', function (st) {
+        st.equal(
+            qs.stringify({ a: 'b:c?d=e&f' }),
+            'a=b%3Ac%3Fd%3De%26f',
+            'is off by default: reserved chars stay percent-encoded'
+        );
+        st.equal(
+            qs.stringify({ a: 'b:c?d=e&f' }, { allowReserved: false }),
+            'a=b%3Ac%3Fd%3De%26f',
+            'explicit false is identical to the default'
+        );
+
+        st.equal(
+            qs.stringify({ redirect: 'https://example.com/a?b=1' }, { allowReserved: true }),
+            'redirect=https://example.com/a?b=1',
+            'leaves a URL value raw'
+        );
+        st.equal(
+            qs.stringify({ a: ':/?@!$\'()*;=' }, { allowReserved: true }),
+            'a=:/?@!$\'()*;=',
+            'leaves every parse-safe reserved char raw'
+        );
+        st.equal(
+            qs.stringify({ a: '&+,#[]' }, { allowReserved: true }),
+            'a=%26%2B%2C%23%5B%5D',
+            'still encodes &, +, comma, #, and brackets'
+        );
+        st.equal(
+            qs.stringify({ a: 'x]=y' }, { allowReserved: true }),
+            'a=x%5D%3Dy',
+            'encodes = directly after ] so parse does not read a bracketed key'
+        );
+        st.equal(
+            qs.stringify({ a: 'x]y=z' }, { allowReserved: true }),
+            'a=x%5Dy=z',
+            'only encodes = when it directly follows ]'
+        );
+        st.equal(
+            qs.stringify({ 'a:b': 'c:d' }, { allowReserved: true }),
+            'a%3Ab=c:d',
+            'does not change key encoding'
+        );
+
+        st.equal(
+            qs.stringify({ a: 'x;y', b: 'z:1' }, { allowReserved: true, delimiter: ';' }),
+            'a=x%3By;b=z:1',
+            'encodes reserved chars that appear in a custom delimiter'
+        );
+        st.equal(
+            qs.stringify({ a: 'a b(c)' }, { allowReserved: true, format: 'RFC1738' }),
+            'a=a+b(c)',
+            'RFC1738 still formats spaces as +'
+        );
+        st.equal(
+            qs.stringify({ a: 'æ:?' }, { allowReserved: true, charset: 'iso-8859-1' }),
+            'a=%E6:?',
+            'works with iso-8859-1'
+        );
+        st.equal(
+            qs.stringify({ a: 'x+y' }, { allowReserved: true, charset: 'iso-8859-1' }),
+            'a=x%2By',
+            'encodes + with iso-8859-1, which escape() would leave raw'
+        );
+        st.equal(
+            qs.stringify({ a: 'b' }, { allowReserved: true, charset: 'iso-8859-1', charsetSentinel: true }),
+            'utf8=%26%2310003%3B&a=b',
+            'does not alter the charset sentinel'
+        );
+        st.equal(
+            qs.stringify({ a: { b: 'c:d' } }, { allowReserved: true, encodeValuesOnly: true }),
+            'a[b]=c:d',
+            'works with encodeValuesOnly'
+        );
+        st.equal(
+            qs.stringify({ a: ['x=y', 'z'] }, { allowReserved: true, arrayFormat: 'comma', encodeValuesOnly: true }),
+            'a=x=y,z',
+            'works with comma arrayFormat'
+        );
+        st.equal(
+            qs.stringify({ a: 'b:c&d' }, { encode: false, allowReserved: true }),
+            'a=b:c&d',
+            'does nothing when encoding is disabled'
+        );
+
+        st['throws'](
+            function () { qs.stringify({ a: 'b' }, { allowReserved: 'yes' }); },
+            TypeError,
+            'throws when allowReserved is not a boolean'
+        );
+
+        st.test('does not alter a custom encoder', function (s2t) {
+            var encoder = function (str) {
+                return String(str).split('').reverse().join('');
+            };
+            s2t.equal(
+                qs.stringify({ a: 'b:c' }, { encoder: encoder, allowReserved: true }),
+                qs.stringify({ a: 'b:c' }, { encoder: encoder }),
+                'output is identical with and without allowReserved'
+            );
+            s2t.equal(
+                qs.stringify({ a: 'b:c' }, { encoder: encoder, allowReserved: true }),
+                'a=c:b',
+                'custom encoder output is used as-is'
+            );
+            s2t.end();
+        });
+
+        st.test('round-trips through qs.parse', function (s2t) {
+            var cases = [
+                [{ redirect: 'https://example.com/a?b=1&c=2' }, { allowReserved: true }, {}],
+                [{ a: ':/?@!$\'()*;=', b: '&+,#[]', c: 'x]=y', d: 'a b' }, { allowReserved: true }, {}],
+                [{ a: ['x=y', 'z]', 'w['] }, { allowReserved: true }, {}],
+                [{ a: { b: 'c:d', c: ['e=f'] } }, { allowReserved: true }, {}],
+                [{ a: ['x=y', 'z'] }, { allowReserved: true, arrayFormat: 'brackets' }, {}],
+                [{ a: ['x=y', 'z'] }, { allowReserved: true, arrayFormat: 'repeat' }, {}],
+                [{ a: ['x=y', 'z'] }, { allowReserved: true, arrayFormat: 'comma', encodeValuesOnly: true }, { comma: true }],
+                [{ a: ['x=y'] }, { allowReserved: true, arrayFormat: 'comma', commaRoundTrip: true, encodeValuesOnly: true }, { comma: true }],
+                [{ a: 'x;y', b: 'z:1' }, { allowReserved: true, delimiter: ';' }, { delimiter: ';' }],
+                [{ a: 'a b(c):d' }, { allowReserved: true, format: 'RFC1738' }, {}],
+                [{ a: 'æ:?' }, { allowReserved: true, charset: 'iso-8859-1' }, { charset: 'iso-8859-1' }],
+                [{ a: 'x+y z' }, { allowReserved: true, charset: 'iso-8859-1' }, { charset: 'iso-8859-1' }],
+                [{ a: '✓' }, { allowReserved: true, charset: 'iso-8859-1' }, { charset: 'iso-8859-1', interpretNumericEntities: true }],
+                [{ a: { b: 'c:d' } }, { allowReserved: true, encodeValuesOnly: true }, {}],
+                [{ a: null, b: 'c:' }, { allowReserved: true, strictNullHandling: true }, { strictNullHandling: true }],
+                [{ a: 'b:c' }, { allowReserved: true, addQueryPrefix: true }, { ignoreQueryPrefix: true }],
+                [{ a: 'é:?' }, { allowReserved: true, charset: 'iso-8859-1', charsetSentinel: true }, { charsetSentinel: true }]
+            ];
+            cases.forEach(function (testCase) {
+                var obj = testCase[0];
+                var stringifyOptions = testCase[1];
+                var parseOptions = testCase[2];
+                s2t.deepEqual(
+                    qs.parse(qs.stringify(obj, stringifyOptions), parseOptions),
+                    obj,
+                    inspect(obj) + ' round-trips with ' + inspect(stringifyOptions)
+                );
+            });
+            s2t.end();
+        });
+
         st.end();
     });
 
